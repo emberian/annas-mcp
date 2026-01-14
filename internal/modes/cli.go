@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/fang"
 	"github.com/iosifache/annas-mcp/internal/anna"
+	"github.com/iosifache/annas-mcp/internal/env"
 	"github.com/iosifache/annas-mcp/internal/logger"
 	"github.com/iosifache/annas-mcp/internal/version"
 	"github.com/joho/godotenv"
@@ -99,7 +100,7 @@ func StartCLI() {
 				zap.String("format", format),
 			)
 
-			env, err := GetEnv()
+			env, err := env.GetEnv()
 			if err != nil {
 				l.Error("Failed to get environment variables", zap.Error(err))
 				return fmt.Errorf("failed to get environment: %w", err)

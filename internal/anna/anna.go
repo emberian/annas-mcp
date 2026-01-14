@@ -14,13 +14,14 @@ import (
 	"path/filepath"
 
 	colly "github.com/gocolly/colly/v2"
+	"github.com/iosifache/annas-mcp/internal/env"
 	"github.com/iosifache/annas-mcp/internal/logger"
 	"go.uber.org/zap"
 )
 
 const (
-	AnnasSearchEndpoint   = "https://annas-archive.org/search?q=%s"
-	AnnasDownloadEndpoint = "https://annas-archive.org/dyn/api/fast_download.json?md5=%s&key=%s"
+	AnnasSearchEndpointFormat   = "https://{}/search?q=%s"
+	AnnasDownloadEndpointFormat = "https://{}/dyn/api/fast_download.json?md5=%s&key=%s"
 )
 
 func extractMetaInformation(meta string) (language, format, size string) {
@@ -84,7 +85,13 @@ func FindBook(query string) ([]*Book, error) {
 		l.Info("Visiting URL", zap.String("url", r.URL.String()))
 	})
 
-	fullURL := fmt.Sprintf(AnnasSearchEndpoint, url.QueryEscape(query))
+	env, err := env.GetEnv()
+	if err != nil {
+		return nil, err
+	}
+
+	annasSearchEndpoint := fmt.Sprintf(AnnasSearchEndpointFormat, env.AnnasBaseURL)
+	fullURL := fmt.Sprintf(annasSearchEndpoint, url.QueryEscape(query))
 	c.Visit(fullURL)
 	c.Wait()
 
@@ -125,7 +132,13 @@ func FindBook(query string) ([]*Book, error) {
 }
 
 func (b *Book) Download(secretKey, folderPath string) error {
-	apiURL := fmt.Sprintf(AnnasDownloadEndpoint, b.Hash, secretKey)
+	env, err := env.GetEnv()
+	if err != nil {
+		return err
+	}
+
+	annasDownloadEndpoint := fmt.Sprintf(AnnasDownloadEndpointFormat, env.AnnasBaseURL)
+	apiURL := fmt.Sprintf(annasDownloadEndpoint, b.Hash, secretKey)
 
 	resp, err := http.Get(apiURL)
 	if err != nil {

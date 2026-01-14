@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/iosifache/annas-mcp/internal/anna"
+	"github.com/iosifache/annas-mcp/internal/env"
 	"github.com/iosifache/annas-mcp/internal/logger"
 	"github.com/iosifache/annas-mcp/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -51,7 +52,7 @@ func DownloadTool(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallTo
 		zap.String("format", params.Arguments.Format),
 	)
 
-	env, err := GetEnv()
+	env, err := env.GetEnv()
 	if err != nil {
 		l.Error("Failed to get environment variables", zap.Error(err))
 		return nil, err
