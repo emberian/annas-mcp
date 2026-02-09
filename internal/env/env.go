@@ -2,7 +2,9 @@ package env
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/iosifache/annas-mcp/internal/logger"
 	"go.uber.org/zap"
@@ -34,6 +36,10 @@ func GetEnv() (*Env, error) {
 		)
 
 		return nil, err
+	}
+
+	if !filepath.IsAbs(downloadPath) {
+		return nil, fmt.Errorf("ANNAS_DOWNLOAD_PATH must be an absolute path, got: %s", downloadPath)
 	}
 
 	if annasBaseURL == "" {

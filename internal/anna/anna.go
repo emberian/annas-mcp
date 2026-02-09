@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,10 +24,11 @@ import (
 )
 
 const (
-	AnnasSearchEndpointFormat = "https://%s/search?q=%s&content=%s"
+	AnnasSearchEndpointFormat   = "https://%s/search?q=%s&content=%s"
 	AnnasSciDBEndpointFormat    = "https://%s/scidb/%s"
 	AnnasDownloadEndpointFormat = "https://%s/dyn/api/fast_download.json?md5=%s&key=%s"
 	HTTPTimeout                 = 30 * time.Second
+	BrowserUserAgent            = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
 var (
@@ -114,7 +116,7 @@ func FindBook(query string, content string) ([]*Book, error) {
 	c := colly.NewCollector(
 		colly.Async(true),
 		// Set realistic User-Agent to avoid DDoS-Guard blocking
-		colly.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+		colly.UserAgent(BrowserUserAgent),
 	)
 
 	c.OnHTML("a[href^='/md5/']", func(e *colly.HTMLElement) {
@@ -251,7 +253,10 @@ func (b *Book) Download(secretKey, folderPath string) error {
 
 	// Validate HTTP status code
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if readErr != nil {
+			return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, resp.Status)
+		}
 		return fmt.Errorf("API request failed with status %d: %s (body: %s)", resp.StatusCode, resp.Status, string(body))
 	}
 
@@ -351,7 +356,7 @@ func LookupDOI(doi string) (*Paper, error) {
 	// Phase 1: Visit /scidb/DOI which redirects to a search results page.
 	// Extract the MD5 hash from the first search result.
 	searchCollector := colly.NewCollector(
-		colly.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+		colly.UserAgent(BrowserUserAgent),
 	)
 
 	searchCollector.OnHTML("a[href^='/md5/']", func(e *colly.HTMLElement) {
@@ -392,7 +397,7 @@ func LookupDOI(doi string) (*Paper, error) {
 
 	// Phase 2: Visit /md5/HASH to get paper details.
 	detailCollector := colly.NewCollector(
-		colly.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+		colly.UserAgent(BrowserUserAgent),
 	)
 
 	detailCollector.OnHTML("title", func(e *colly.HTMLElement) {
@@ -480,7 +485,7 @@ func (p *Paper) Download(folderPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", BrowserUserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -489,8 +494,28 @@ func (p *Paper) Download(folderPath string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if readErr != nil {
+			return fmt.Errorf("download failed with status %d: %s", resp.StatusCode, resp.Status)
+		}
 		return fmt.Errorf("download failed with status %d: %s (body: %s)", resp.StatusCode, resp.Status, string(body))
+	}
+
+	// Infer file extension from Content-Disposition or Content-Type
+	ext := ".pdf"
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		if _, params, err := mime.ParseMediaType(cd); err == nil {
+			if fn, ok := params["filename"]; ok {
+				if e := filepath.Ext(fn); e != "" {
+					ext = e
+				}
+			}
+		}
+	} else if ct := resp.Header.Get("Content-Type"); ct != "" {
+		exts, _ := mime.ExtensionsByType(ct)
+		if len(exts) > 0 {
+			ext = exts[0]
+		}
 	}
 
 	// Build filename from title or DOI
@@ -502,7 +527,7 @@ func (p *Paper) Download(folderPath string) error {
 	if safeName == "" {
 		safeName = "paper"
 	}
-	filename := safeName + ".pdf"
+	filename := safeName + ext
 	filePath := filepath.Join(folderPath, filename)
 
 	l.Info("Creating file", zap.String("path", filePath))

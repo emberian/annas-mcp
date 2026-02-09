@@ -26,8 +26,8 @@ type Paper struct {
 }
 
 func (p *Paper) String() string {
-	return fmt.Sprintf("DOI: %s\nTitle: %s\nAuthors: %s\nJournal: %s\nSize: %s\nHash: %s\nDownload URL: %s\nPage: %s",
-		p.DOI, p.Title, p.Authors, p.Journal, p.Size, p.Hash, p.DownloadURL, p.PageURL)
+	return fmt.Sprintf("DOI: %s\nTitle: %s\nAuthors: %s\nJournal: %s\nSize: %s\nHash: %s\nDownload URL: %s\nSci-Hub: %s\nPage: %s",
+		p.DOI, p.Title, p.Authors, p.Journal, p.Size, p.Hash, p.DownloadURL, p.SciHubURL, p.PageURL)
 }
 
 type fastDownloadResponse struct {
