@@ -122,6 +122,72 @@ func DOITool(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolPar
 	}, nil
 }
 
+func DownloadPaperTool(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallToolParamsFor[DownloadPaperParams]) (*mcp.CallToolResultFor[any], error) {
+	l := logger.GetLogger()
+
+	l.Info("Download paper command called", zap.String("doi", params.Arguments.DOI))
+
+	env, err := env.GetEnv()
+	if err != nil {
+		l.Error("Failed to get environment variables", zap.Error(err))
+		return nil, err
+	}
+
+	paper, err := anna.LookupDOI(params.Arguments.DOI)
+	if err != nil {
+		l.Error("DOI lookup failed for download",
+			zap.String("doi", params.Arguments.DOI),
+			zap.Error(err),
+		)
+		return nil, err
+	}
+
+	// Try fast_download API first if we have a hash and secret key
+	if paper.Hash != "" && env.SecretKey != "" {
+		book := &anna.Book{
+			Hash:   paper.Hash,
+			Title:  paper.Title,
+			Format: "pdf",
+		}
+		if err := book.Download(env.SecretKey, env.DownloadPath); err != nil {
+			l.Warn("Fast download failed, trying SciDB download",
+				zap.String("doi", params.Arguments.DOI),
+				zap.Error(err),
+			)
+		} else {
+			l.Info("Paper downloaded via fast download",
+				zap.String("doi", params.Arguments.DOI),
+				zap.String("path", env.DownloadPath),
+			)
+			return &mcp.CallToolResultFor[any]{
+				Content: []mcp.Content{&mcp.TextContent{
+					Text: "Paper downloaded successfully to path: " + env.DownloadPath,
+				}},
+			}, nil
+		}
+	}
+
+	// Fall back to SciDB download
+	if err := paper.Download(env.DownloadPath); err != nil {
+		l.Error("SciDB download failed",
+			zap.String("doi", params.Arguments.DOI),
+			zap.Error(err),
+		)
+		return nil, err
+	}
+
+	l.Info("Paper downloaded via SciDB",
+		zap.String("doi", params.Arguments.DOI),
+		zap.String("path", env.DownloadPath),
+	)
+
+	return &mcp.CallToolResultFor[any]{
+		Content: []mcp.Content{&mcp.TextContent{
+			Text: "Paper downloaded successfully to path: " + env.DownloadPath,
+		}},
+	}, nil
+}
+
 func StartMCPServer() {
 	l := logger.GetLogger()
 	defer l.Sync()
@@ -146,6 +212,9 @@ func StartMCPServer() {
 		)),
 		mcp.NewServerTool("doi", "Look up a specific journal article by its DOI via SciDB. Returns authors, journal, size, and download links. If you don't have a DOI and the user wants to find papers by topic or keyword, use the search tool with content=journal instead.", DOITool, mcp.Input(
 			mcp.Property("doi", mcp.Description("DOI of the paper (e.g. 10.1038/nature12345)")),
+		)),
+		mcp.NewServerTool("download_paper", "Download a journal article/paper by its DOI. Looks up the paper, then downloads via fast download (if available) or SciDB. Requires ANNAS_DOWNLOAD_PATH environment variable.", DownloadPaperTool, mcp.Input(
+			mcp.Property("doi", mcp.Description("DOI of the paper to download (e.g. 10.1038/nature12345)")),
 		)),
 	)
 

@@ -239,8 +239,7 @@ func (b *Book) Download(secretKey, folderPath string) error {
 	}
 
 	// First API call: get download URL
-	annasDownloadEndpoint := fmt.Sprintf(AnnasDownloadEndpointFormat, env.AnnasBaseURL)
-	apiURL := fmt.Sprintf(annasDownloadEndpoint, b.Hash, secretKey)
+	apiURL := fmt.Sprintf(AnnasDownloadEndpointFormat, env.AnnasBaseURL, b.Hash, secretKey)
 
 	l.Info("Fetching download URL", zap.String("hash", b.Hash))
 
@@ -252,7 +251,8 @@ func (b *Book) Download(secretKey, folderPath string) error {
 
 	// Validate HTTP status code
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, resp.Status)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("API request failed with status %d: %s (body: %s)", resp.StatusCode, resp.Status, string(body))
 	}
 
 	var apiResp fastDownloadResponse
@@ -341,76 +341,206 @@ func (b *Book) Download(secretKey, folderPath string) error {
 func LookupDOI(doi string) (*Paper, error) {
 	l := logger.GetLogger()
 
-	c := colly.NewCollector(
-		colly.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
-	)
+	env, err := env.GetEnv()
+	if err != nil {
+		return nil, err
+	}
 
 	paper := &Paper{DOI: doi}
 
-	// Extract authors from page title (format: "Author1; Author2 - Anna's Archive")
-	c.OnHTML("title", func(e *colly.HTMLElement) {
-		title := e.Text
-		if idx := strings.Index(title, " - Anna"); idx > 0 {
-			paper.Authors = strings.TrimSpace(title[:idx])
+	// Phase 1: Visit /scidb/DOI which redirects to a search results page.
+	// Extract the MD5 hash from the first search result.
+	searchCollector := colly.NewCollector(
+		colly.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+	)
+
+	searchCollector.OnHTML("a[href^='/md5/']", func(e *colly.HTMLElement) {
+		if paper.Hash != "" {
+			return
+		}
+		href := e.Attr("href")
+		hash := strings.TrimPrefix(href, "/md5/")
+		if hash != "" {
+			paper.Hash = hash
 		}
 	})
 
-	// Extract journal info
-	c.OnHTML("meta[name=description]", func(e *colly.HTMLElement) {
-		paper.Journal = e.Attr("content")
-	})
-
-	// Extract size from metadata line
-	c.OnHTML("div.text-gray-500", func(e *colly.HTMLElement) {
-		text := e.Text
-		if strings.Contains(text, "MB") || strings.Contains(text, "KB") {
-			paper.Size = strings.TrimSpace(text)
-		}
-	})
-
-	// Extract download link
-	c.OnHTML("a[href*='/d3/']", func(e *colly.HTMLElement) {
-		if paper.DownloadURL == "" {
-			paper.DownloadURL = e.Attr("href")
-		}
-	})
-
-	// Extract Sci-Hub link
-	c.OnHTML("a[href*='sci-hub']", func(e *colly.HTMLElement) {
-		paper.SciHubURL = e.Attr("href")
-	})
-
-	c.OnError(func(r *colly.Response, err error) {
+	searchCollector.OnError(func(r *colly.Response, err error) {
 		status := 0
 		if r != nil {
 			status = r.StatusCode
 		}
-		l.Error("SciDB lookup failed",
+		l.Error("SciDB search failed",
 			zap.String("doi", doi),
 			zap.Int("statusCode", status),
 			zap.Error(err),
 		)
 	})
 
-	env, err := env.GetEnv()
-	if err != nil {
-		return nil, err
-	}
-
 	scidbURL := fmt.Sprintf(AnnasSciDBEndpointFormat, env.AnnasBaseURL, doi)
 	paper.PageURL = scidbURL
 
 	l.Info("Looking up DOI", zap.String("url", scidbURL))
 
-	if err := c.Visit(scidbURL); err != nil {
+	if err := searchCollector.Visit(scidbURL); err != nil {
 		return nil, fmt.Errorf("failed to lookup DOI: %w", err)
 	}
 
-	if paper.Authors == "" && paper.DownloadURL == "" {
+	if paper.Hash == "" {
 		return nil, fmt.Errorf("no paper found for DOI: %s", doi)
 	}
 
+	// Phase 2: Visit /md5/HASH to get paper details.
+	detailCollector := colly.NewCollector(
+		colly.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+	)
+
+	detailCollector.OnHTML("title", func(e *colly.HTMLElement) {
+		title := e.Text
+		if idx := strings.Index(title, " - Anna"); idx > 0 {
+			paper.Title = strings.TrimSpace(title[:idx])
+		}
+	})
+
+	detailCollector.OnHTML("meta[name=description]", func(e *colly.HTMLElement) {
+		// Format: "Authors\n\nPublisher (ISSN)\n\nJournal, #issue, vol, pages, year"
+		desc := e.Attr("content")
+		parts := strings.Split(desc, "\n\n")
+		if len(parts) >= 3 {
+			paper.Journal = strings.TrimSpace(parts[2])
+		} else if len(parts) >= 2 {
+			paper.Journal = strings.TrimSpace(parts[1])
+		} else {
+			paper.Journal = strings.TrimSpace(desc)
+		}
+	})
+
+	// Extract authors from the detail page
+	detailCollector.OnHTML("a[href^='/search']", func(e *colly.HTMLElement) {
+		if paper.Authors != "" {
+			return
+		}
+		// Author links contain a span with icon-[mdi--user-edit]
+		if e.DOM.Find("span.icon-\\[mdi--user-edit\\]").Length() > 0 {
+			paper.Authors = strings.TrimSpace(e.Text)
+		}
+	})
+
+	// Extract size from metadata line
+	detailCollector.OnHTML("div.text-gray-500", func(e *colly.HTMLElement) {
+		text := e.Text
+		if strings.Contains(text, "MB") || strings.Contains(text, "KB") {
+			paper.Size = strings.TrimSpace(text)
+		}
+	})
+
+	detailCollector.OnError(func(r *colly.Response, err error) {
+		l.Warn("Failed to fetch paper details", zap.String("hash", paper.Hash), zap.Error(err))
+	})
+
+	md5URL := fmt.Sprintf("https://%s/md5/%s", env.AnnasBaseURL, paper.Hash)
+	l.Info("Fetching paper details", zap.String("url", md5URL))
+
+	if err := detailCollector.Visit(md5URL); err != nil {
+		l.Warn("Failed to visit paper detail page", zap.Error(err))
+		// Non-fatal: we still have the hash for downloading
+	}
+
+	// Set download URL for scidb (no browser verification required)
+	paper.DownloadURL = fmt.Sprintf("/scidb?doi=%s", doi)
+
 	return paper, nil
+}
+
+func (p *Paper) Download(folderPath string) error {
+	l := logger.GetLogger()
+
+	if p.DownloadURL == "" {
+		return errors.New("no download URL available for this paper")
+	}
+
+	env, err := env.GetEnv()
+	if err != nil {
+		return fmt.Errorf("failed to get environment: %w", err)
+	}
+
+	// Construct full download URL
+	downloadURL := p.DownloadURL
+	if !strings.HasPrefix(downloadURL, "http") {
+		downloadURL = fmt.Sprintf("https://%s%s", env.AnnasBaseURL, downloadURL)
+	}
+
+	client := &http.Client{
+		Timeout: 2 * HTTPTimeout,
+	}
+
+	l.Info("Downloading paper via SciDB", zap.String("url", downloadURL))
+
+	req, err := http.NewRequest("GET", downloadURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to download paper: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("download failed with status %d: %s (body: %s)", resp.StatusCode, resp.Status, string(body))
+	}
+
+	// Build filename from title or DOI
+	name := p.Title
+	if name == "" {
+		name = p.DOI
+	}
+	safeName := sanitizeFilename(name)
+	if safeName == "" {
+		safeName = "paper"
+	}
+	filename := safeName + ".pdf"
+	filePath := filepath.Join(folderPath, filename)
+
+	l.Info("Creating file", zap.String("path", filePath))
+
+	out, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+
+	success := false
+	defer func() {
+		out.Close()
+		if !success {
+			if removeErr := os.Remove(filePath); removeErr != nil {
+				l.Warn("Failed to remove partial file",
+					zap.String("path", filePath),
+					zap.Error(removeErr),
+				)
+			}
+		}
+	}()
+
+	written, err := io.Copy(out, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write file (wrote %d bytes): %w", written, err)
+	}
+
+	if err := out.Sync(); err != nil {
+		return fmt.Errorf("failed to sync file to disk: %w", err)
+	}
+
+	success = true
+	l.Info("Paper download completed successfully",
+		zap.String("path", filePath),
+		zap.Int64("bytes", written),
+	)
+
+	return nil
 }
 
 func (b *Book) String() string {

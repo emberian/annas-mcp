@@ -15,17 +15,19 @@ type Book struct {
 
 type Paper struct {
 	DOI         string `json:"doi"`
+	Title       string `json:"title,omitempty"`
 	Authors     string `json:"authors"`
 	Journal     string `json:"journal"`
 	Size        string `json:"size"`
+	Hash        string `json:"hash,omitempty"`
 	DownloadURL string `json:"download_url"`
-	SciHubURL   string `json:"scihub_url"`
+	SciHubURL   string `json:"scihub_url,omitempty"`
 	PageURL     string `json:"page_url"`
 }
 
 func (p *Paper) String() string {
-	return fmt.Sprintf("DOI: %s\nAuthors: %s\nJournal: %s\nSize: %s\nDownload URL: %s\nSci-Hub: %s\nPage: %s",
-		p.DOI, p.Authors, p.Journal, p.Size, p.DownloadURL, p.SciHubURL, p.PageURL)
+	return fmt.Sprintf("DOI: %s\nTitle: %s\nAuthors: %s\nJournal: %s\nSize: %s\nHash: %s\nDownload URL: %s\nPage: %s",
+		p.DOI, p.Title, p.Authors, p.Journal, p.Size, p.Hash, p.DownloadURL, p.PageURL)
 }
 
 type fastDownloadResponse struct {

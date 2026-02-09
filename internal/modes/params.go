@@ -14,3 +14,7 @@ type DownloadParams struct {
 type DOIParams struct {
 	DOI string `json:"doi" mcp:"DOI of the paper to look up (e.g. 10.1038/nature12345)"`
 }
+
+type DownloadPaperParams struct {
+	DOI string `json:"doi" mcp:"DOI of the paper to download"`
+}
